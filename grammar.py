@@ -1,7 +1,8 @@
-"""Tiny EBNF → CFG, then incremental Earley (prefix + completion).
+"""Tiny EBNF → CFG, plus incremental Earley as the named correctness baseline.
 
-Willard & Louf 2023 (Outlines); Dong et al. XGrammar 2024/2025.
-Tokens may span multiple lexer terminals; we scan at character granularity.
+Default constrained decoding uses the PDA + token-mask cache in ``pda.py`` /
+``decode.TokenMasker``. ``Earley`` here is the Outlines-style recognizer used to
+audit PDA masks (Willard & Louf 2023). Not a regex.
 """
 
 from __future__ import annotations

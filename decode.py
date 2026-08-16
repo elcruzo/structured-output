@@ -1,4 +1,12 @@
-"""Token-level CFG mask + logits processor. Multi-char tokens are accepted only if every char stays in-language."""
+"""Token-level CFG mask + logits processor.
+
+Default: XGrammar PDA + JIT adaptive token-mask cache (context-independent precheck,
+context-dependent checked on the full stack). Multi-char tokens are accepted only when
+the whole span stays in-language.
+
+Named baseline: ``EarleyTokenMasker`` — character-level Earley scan of every vocab
+token (correctness oracle; no PDA cache). Not a regex.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +16,7 @@ import numpy as np
 import torch
 
 from grammar import JSON_EBNF, Earley, Grammar, parse_ebnf
+from pda import PDA, PDAMatcher, TokenMaskCache
 
 # Toy BPE-like pieces, including multi-char tokens that span lexer terminals.
 JSON_VOCAB: list[str] = [
@@ -43,6 +52,47 @@ JSON_VOCAB: list[str] = [
 
 
 class TokenMasker:
+    """Default masker: PDA + JIT adaptive token-mask cache (XGrammar / XGrammar-2-style)."""
+
+    def __init__(self, grammar: Grammar | None = None, vocab: list[str] | None = None) -> None:
+        self.grammar = grammar or parse_ebnf(JSON_EBNF)
+        self.vocab = vocab if vocab is not None else list(JSON_VOCAB)
+        self.pda = PDA(self.grammar)
+        self.cache = TokenMaskCache(self.pda, self.vocab)
+        self._prefix_cache: dict[str, list[int]] = {}
+
+    def prefix_of(self, emitted: list[int]) -> str:
+        return "".join(self.vocab[i] for i in emitted)
+
+    def _stacks_for(self, prefix: str):
+        m = PDAMatcher(self.pda)
+        if prefix and not m.feed(prefix):
+            return set()
+        return m.stacks
+
+    def legal_ids(self, emitted: list[int]) -> list[int]:
+        prefix = self.prefix_of(emitted)
+        hit = self._prefix_cache.get(prefix)
+        if hit is not None:
+            return hit
+        stacks = self._stacks_for(prefix)
+        legal = self.cache.legal_ids(stacks) if stacks else []
+        self._prefix_cache[prefix] = legal
+        return legal
+
+    def is_complete(self, emitted: list[int] | str) -> bool:
+        s = emitted if isinstance(emitted, str) else self.prefix_of(emitted)
+        m = PDAMatcher(self.pda)
+        return (not s or m.feed(s)) and m.is_complete()
+
+    def cache_stats(self) -> dict[str, int]:
+        """JIT compile pressure: how many stack-top nodes have been compiled."""
+        return {"compiled_nodes": len(self.cache._nodes), "vocab": len(self.vocab)}
+
+
+class EarleyTokenMasker:
+    """Named correctness baseline: incremental Earley over characters (no PDA cache)."""
+
     def __init__(self, grammar: Grammar | None = None, vocab: list[str] | None = None) -> None:
         self.grammar = grammar or parse_ebnf(JSON_EBNF)
         self.vocab = vocab if vocab is not None else list(JSON_VOCAB)
@@ -78,7 +128,7 @@ class TokenMasker:
 
 
 class LogitsProcessor:
-    def __init__(self, masker: TokenMasker) -> None:
+    def __init__(self, masker: TokenMasker | EarleyTokenMasker) -> None:
         self.masker = masker
 
     def __call__(self, logits: torch.Tensor, emitted: list[int]) -> torch.Tensor:
@@ -96,12 +146,13 @@ _CLOSERS = frozenset({"}", "]", '"'})
 
 
 def generate(
-    masker: TokenMasker,
+    masker: TokenMasker | EarleyTokenMasker | None = None,
     rng: np.random.Generator | None = None,
     max_tokens: int = 48,
     logits: torch.Tensor | None = None,
 ) -> str:
     """Sample a completion in the grammar. Prefers closers as length grows so JSON finishes."""
+    masker = masker or TokenMasker()
     rng = rng or np.random.default_rng()
     proc = LogitsProcessor(masker) if logits is not None else None
     emitted: list[int] = []
@@ -119,7 +170,6 @@ def generate(
         if proc is not None:
             assert logits is not None
             masked = proc(logits, emitted)
-            # Restrict to the (possibly closer-biased) legal subset.
             row = masked.detach().cpu().float().flatten()
             scores = np.array([float(row[i]) if i < row.numel() else -1e9 for i in legal], dtype=np.float64)
             scores = np.where(np.isfinite(scores), scores, -1e9)
@@ -142,7 +192,7 @@ def generate_n(n: int, seed: int = 0, max_tries: int = 8) -> list[str]:
     masker = TokenMasker()
     rng = np.random.default_rng(seed)
     out: list[str] = []
-    for i in range(n):
+    for _ in range(n):
         last_err: Exception | None = None
         for _ in range(max_tries):
             try:

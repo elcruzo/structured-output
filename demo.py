@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""CPU demo: CFG-constrained JSON samples + a multi-char mask check."""
+"""CPU demo: PDA+cache constrained JSON + Earley baseline agreement check."""
 
-from decode import TokenMasker, generate_n
+from decode import EarleyTokenMasker, TokenMasker, generate_n
 from grammar import JSON_EBNF, accepts, parse_ebnf
 
 
@@ -15,6 +15,10 @@ def main() -> None:
     legal = {masker.vocab[i] for i in masker.legal_ids(brace)}
     print("legal after '{':", sorted(legal))
     print("'true' legal after '{'? ", "true" in legal)
+    print("cache JIT nodes:", masker.cache_stats()["compiled_nodes"])
+    ear = EarleyTokenMasker()
+    assert set(masker.legal_ids(brace)) == set(ear.legal_ids(brace))
+    print("PDA mask ≡ Earley baseline after '{'")
 
 
 if __name__ == "__main__":

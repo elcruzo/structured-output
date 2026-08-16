@@ -1,12 +1,13 @@
-"""CFG masker invariants: samples parse, nesting, multi-char context, json.loads."""
+"""CFG masker invariants: PDA default ≡ Earley baseline, cache, nesting, json.loads."""
 
 import json
 
 import numpy as np
 import torch
 
-from decode import JSON_VOCAB, LogitsProcessor, TokenMasker, generate, generate_n
-from grammar import JSON_EBNF, accepts, parse_ebnf, valid_prefix
+from decode import JSON_VOCAB, EarleyTokenMasker, LogitsProcessor, TokenMasker, generate, generate_n
+from grammar import JSON_EBNF, Earley, accepts, parse_ebnf, valid_prefix
+from pda import PDA, TokenMaskCache, accepts_pda, classify_token, valid_prefix_pda
 
 
 def test_hundred_random_samples_parse_and_json_loads():
@@ -17,6 +18,7 @@ def test_hundred_random_samples_parse_and_json_loads():
     parsed = []
     for s in samples:
         assert accepts(g, s), s
+        assert accepts_pda(g, s), s
         parsed.append(json.loads(s))
     assert any(isinstance(v, (dict, list)) and v for v in parsed)
 
@@ -26,11 +28,52 @@ def test_nested_arrays_objects():
     s = '{"a":[1,{"b":true}]}'
     for i in range(len(s) + 1):
         assert valid_prefix(g, s[:i]), s[:i]
+        assert valid_prefix_pda(g, s[:i]), s[:i]
     assert accepts(g, s)
+    assert accepts_pda(g, s)
     assert json.loads(s) == {"a": [1, {"b": True}]}
     deep = '[{"a":{"b":[false,null,2]}}]'
     assert accepts(g, deep)
+    assert accepts_pda(g, deep)
     json.loads(deep)
+
+
+def test_pda_agrees_with_earley_on_prefixes_and_reject():
+    g = parse_ebnf(JSON_EBNF)
+    good = ['', '{', '{"a"', '{"a":', '{"a":true}', '[1,2]', 'null', 'false']
+    bad = ['}', '{:', 'tru', '{"a":tru}', '[1,]', '01', '{a}']
+    for s in good:
+        assert valid_prefix(g, s) == valid_prefix_pda(g, s), s
+        assert accepts(g, s) == accepts_pda(g, s), s
+    for s in bad:
+        assert valid_prefix(g, s) == valid_prefix_pda(g, s), s
+        assert not accepts(g, s) and not accepts_pda(g, s), s
+    raw_blob = '{"title":"Attention Is All You Need","x":' + "y" * 200 + "}"
+    assert not accepts(g, raw_blob)
+    assert not accepts_pda(g, "{")
+    assert not accepts(g, "not json")
+
+
+def test_pda_mask_matches_earley_baseline():
+    g = parse_ebnf(JSON_EBNF)
+    vocab = list(JSON_VOCAB)
+    pda_m = TokenMasker(g, vocab)
+    ear_m = EarleyTokenMasker(g, vocab)
+    # Only prefixes that greedy-match the toy vocab (no bare ``t`` — use full ``true``).
+    prefixes = ["", "{", '{"', '{"a', '{"a"', '{"a":', '{"a":true', "[", "[1", "[1,"]
+    for pref in prefixes:
+        emitted: list[int] = []
+        i = 0
+        while i < len(pref):
+            hit = None
+            for tok in sorted(vocab, key=len, reverse=True):
+                if pref.startswith(tok, i):
+                    hit = tok
+                    break
+            assert hit is not None, pref[i:]
+            emitted.append(vocab.index(hit))
+            i += len(hit)
+        assert set(pda_m.legal_ids(emitted)) == set(ear_m.legal_ids(emitted)), pref
 
 
 def test_multichar_token_masked_by_context():
@@ -39,7 +82,6 @@ def test_multichar_token_masked_by_context():
     tid = {t: i for i, t in enumerate(vocab)}
 
     def legal_after(text: str) -> set[str]:
-        # Reconstruct emitted token ids by a greedy left-to-right match on this tiny vocab.
         emitted: list[int] = []
         i = 0
         while i < len(text):
@@ -69,7 +111,6 @@ def test_logits_processor_sets_illegal_to_neginf():
     masker = TokenMasker()
     proc = LogitsProcessor(masker)
     logits = torch.zeros(len(masker.vocab))
-    # After '{', multi-char 'true' is illegal.
     emitted = [masker.vocab.index("{")]
     masked = proc(logits, emitted)
     legal = set(masker.legal_ids(emitted))
@@ -84,3 +125,60 @@ def test_logits_processor_sets_illegal_to_neginf():
 def test_completed_json_is_loadable_single_generate():
     s = generate(TokenMasker(), rng=np.random.default_rng(1))
     json.loads(s)
+
+
+def test_token_mask_cache_partitions_and_jit():
+    g = parse_ebnf(JSON_EBNF)
+    pda = PDA(g)
+    cache = TokenMaskCache(pda, list(JSON_VOCAB))
+    assert cache._nodes == {}
+    start = g.start
+    mask = cache.compile_node(start, pda.fsas[start].start)
+    assert mask.kind in ("accept_heavy", "reject_heavy", "bitset")
+    assert len(mask.dependent) + len(mask.accepted) + len(mask.rejected) <= len(JSON_VOCAB) or mask.kind == "accept_heavy"
+    # Partition covers the vocabulary for reject_heavy / bitset; accept_heavy stores rej+dep only.
+    covered = set(mask.dependent)
+    if mask.kind == "reject_heavy":
+        covered |= set(mask.accepted)
+        assert covered | set(range(len(JSON_VOCAB)))  # CI accept listed
+        assert set(mask.accepted).isdisjoint(set(mask.dependent))
+    elif mask.kind == "accept_heavy":
+        covered |= set(mask.rejected)
+        assert set(mask.rejected).isdisjoint(set(mask.dependent))
+    else:
+        covered |= set(mask.accepted) | set(mask.rejected)
+        assert covered == set(range(len(JSON_VOCAB)))
+    # JIT: legal_ids compiles stack tops on demand
+    m = TokenMasker(g)
+    assert m.cache_stats()["compiled_nodes"] == 0
+    m.legal_ids([])
+    assert m.cache_stats()["compiled_nodes"] >= 1
+    # After '{', union of stack tops: "true" never CI-accepted; '"' accepted on some top.
+    from pda import PDAMatcher
+
+    matcher = PDAMatcher(pda)
+    assert matcher.feed("{")
+    kinds_true = {classify_token(pda, st[-1].rule, st[-1].node, "true") for st in matcher.stacks}
+    kinds_quote = {classify_token(pda, st[-1].rule, st[-1].node, '"') for st in matcher.stacks}
+    assert "accepted" not in kinds_true
+    assert "accepted" in kinds_quote
+    assert '"' in {JSON_VOCAB[i] for i in TokenMasker(g).legal_ids([JSON_VOCAB.index("{")])}
+
+
+def test_earley_baseline_still_generates():
+    s = generate(EarleyTokenMasker(), rng=np.random.default_rng(3))
+    g = parse_ebnf(JSON_EBNF)
+    assert accepts(g, s)
+    json.loads(s)
+
+
+def test_earley_item_scan_not_regex_stub():
+    """Regression: recognizer must be Earley items, not an always-true / regex stand-in."""
+    g = parse_ebnf(JSON_EBNF)
+    p = Earley(g)
+    assert p.feed("{")
+    assert p.is_alive() and not p.is_complete()
+    assert p.chart[-1]  # non-empty item set after a valid prefix char
+    assert any(it.dot > 0 or it.rule == "object" for it in p.chart[-1])
+    assert not accepts(g, "{")
+    assert not accepts(g, "not json")
