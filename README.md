@@ -29,6 +29,6 @@ The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259
 ## Run
 
 ```bash
-python demo.py
+python main.py
 python -m pytest test_structured.py -q
 ```
