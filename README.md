@@ -14,6 +14,11 @@ The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259
 - Willard & Louf, 2023. *Efficient Guided Generation for Large Language Models* (Outlines).
 - Dong et al., 2024/2025. *XGrammar: Flexible and Efficient Structured Generation Engine*.
 
+## Papers on disk
+
+- [`papers/willard-outlines-2023.pdf`](papers/willard-outlines-2023.pdf) — Willard & Louf. Efficient Guided Generation / Outlines (2023) ([arXiv:2307.09702](https://arxiv.org/abs/2307.09702))
+- [`papers/dong-xgrammar-2024.pdf`](papers/dong-xgrammar-2024.pdf) — Dong et al. XGrammar (2024) ([arXiv:2411.15100](https://arxiv.org/abs/2411.15100))
+
 ## Run
 
 ```bash
