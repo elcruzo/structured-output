@@ -135,19 +135,36 @@ def test_token_mask_cache_partitions_and_jit():
     start = g.start
     mask = cache.compile_node(start, pda.fsas[start].start)
     assert mask.kind in ("accept_heavy", "reject_heavy", "bitset")
-    assert len(mask.dependent) + len(mask.accepted) + len(mask.rejected) <= len(JSON_VOCAB) or mask.kind == "accept_heavy"
-    # Partition covers the vocabulary for reject_heavy / bitset; accept_heavy stores rej+dep only.
-    covered = set(mask.dependent)
+    # Ground-truth partition via classify_token (pairwise disjoint ∪ covers vocab).
+    parts = {"accepted": set(), "rejected": set(), "dependent": set()}
+    for tid, tok in enumerate(JSON_VOCAB):
+        parts[classify_token(pda, start, pda.fsas[start].start, tok)].add(tid)
+    vocab_ids = set(range(len(JSON_VOCAB)))
+    assert parts["accepted"] | parts["rejected"] | parts["dependent"] == vocab_ids
+    assert parts["accepted"].isdisjoint(parts["rejected"])
+    assert parts["accepted"].isdisjoint(parts["dependent"])
+    assert parts["rejected"].isdisjoint(parts["dependent"])
+    acc, rej, dep = set(mask.accepted), set(mask.rejected), set(mask.dependent)
+    assert acc.isdisjoint(rej) and acc.isdisjoint(dep) and rej.isdisjoint(dep)
+    assert dep == parts["dependent"]
     if mask.kind == "reject_heavy":
-        covered |= set(mask.accepted)
-        assert covered | set(range(len(JSON_VOCAB)))  # CI accept listed
-        assert set(mask.accepted).isdisjoint(set(mask.dependent))
+        # Stores CI-accepted + dependent only; rejected is the complement.
+        assert mask.rejected == ()
+        assert acc == parts["accepted"]
+        assert len(acc) + len(dep) <= len(JSON_VOCAB)
+        assert mask.context_independent_accepted() == parts["accepted"]
     elif mask.kind == "accept_heavy":
-        covered |= set(mask.rejected)
-        assert set(mask.rejected).isdisjoint(set(mask.dependent))
+        # Stores CI-rejected + dependent only; accepted is the complement.
+        assert mask.accepted == ()
+        assert rej == parts["rejected"]
+        assert len(rej) + len(dep) <= len(JSON_VOCAB)
+        assert mask.context_independent_accepted() == parts["accepted"]
     else:
-        covered |= set(mask.accepted) | set(mask.rejected)
-        assert covered == set(range(len(JSON_VOCAB)))
+        # Bitset stores the full three-way partition explicitly.
+        assert acc == parts["accepted"] and rej == parts["rejected"]
+        assert acc | rej | dep == vocab_ids
+        assert len(acc) + len(rej) + len(dep) == len(JSON_VOCAB)
+        assert mask.context_independent_accepted() == parts["accepted"]
     # JIT: legal_ids compiles stack tops on demand
     m = TokenMasker(g)
     assert m.cache_stats()["compiled_nodes"] == 0
