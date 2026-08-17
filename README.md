@@ -26,6 +26,30 @@ The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259
 - [`papers/dong-xgrammar-2024.pdf`](papers/dong-xgrammar-2024.pdf) — Dong et al. XGrammar (2024) ([arXiv:2411.15100](https://arxiv.org/abs/2411.15100))
 - [`papers/dong-xgrammar2-2026.pdf`](papers/dong-xgrammar2-2026.pdf) — Dong et al. XGrammar-2 (2026) ([arXiv:2601.04426](https://arxiv.org/abs/2601.04426))
 
+## Compared to XGrammar
+
+**What you learn here:** byte-level PDA + JIT context-independent token-mask cache; Earley named baseline for mask equality — nested JSON CFG, not regex.
+
+| | This repo | XGrammar / XGrammar-2 |
+|---|---|---|
+| Engine | Educational PDA + CI cache | Production PDA + adaptive JIT |
+| Baseline | Earley mask audit | Earley in XGrammar-2 |
+| Vocab | Tiny char/piece vocab | Full tokenizer vocab |
+| Output | `json.loads` on samples | Serving-time constrained decode |
+
+### Numbers (2026-08-16, Apple M5, darwin arm64 CPU)
+
+| Metric | This repo | Baseline | Source |
+|---|---|---|---|
+| Samples `complete=True` | 8/8 | Constrained JSON valid | `main.py` |
+| JIT compiled nodes after `{` | 9 | CI mask cache amortization | Dong et al. XGrammar |
+| PDA ≡ Earley legal ids | True | Earley as correctness oracle | measured |
+| `'true'` legal after `{` | False | Grammar rejects bool key | measured |
+
+```bash
+python main.py
+```
+
 ## Run
 
 ```bash
