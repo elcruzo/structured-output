@@ -28,7 +28,10 @@ The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259
 
 ## Compared to XGrammar
 
-**What you learn here:** byte-level PDA + JIT context-independent token-mask cache; Earley named baseline for mask equality — nested JSON CFG, not regex.
+**What you learn here:**
+- Byte-level PDA + JIT context-independent token-mask cache
+- Earley named baseline for mask equality
+- Nested JSON CFG, not regex
 
 | | This repo | XGrammar / XGrammar-2 |
 |---|---|---|
