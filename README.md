@@ -1,24 +1,24 @@
 # 25 — Structured output (CFG constrained decoding)
 
-**Default:** XGrammar-style byte-level **PDA** + **JIT adaptive token-mask cache**
-(Dong et al. 2024; cache amortization as in XGrammar-2). Not a regex.
+**Default:** byte-level **PDA** plus a Python dict of context-independent token
+masks keyed by `(rule, node)` (Dong et al. 2024; cache amortization as in XGrammar-2).
 
 **Named baseline:** incremental **Earley** (`Earley` / `EarleyTokenMasker`) for
 prefix/completion correctness audits against the PDA masks.
 
 1. Parse a tiny EBNF subset (literals, char classes, concat, `|`, `?`/`*`/`+`, named rules) into a CFG.
 2. Compile each rule to an FSA with character edges and rule-reference edges; a pushdown stack handles recursion (parallel stacks under nondeterminism).
-3. At each stack-top node, tokens are partitioned into context-independent accepted / rejected vs context-dependent (validity needs a parent pop). CI masks are JIT-compiled per node and stored accept-heavy / reject-heavy / bitset.
-4. Runtime mask = CI lookup ∪ full-stack checks on the dependent set. Vocabulary pieces may span multiple terminals (`true`, `:true`).
+3. At each stack-top node, tokens are partitioned into context-independent accepted / rejected vs context-dependent (validity needs a parent pop). CI masks are compiled per node on first use and stored in `_nodes` as accept-heavy / reject-heavy / bitset id lists.
+4. Runtime mask = dict lookup ∪ full-stack checks on the dependent set. Vocabulary pieces may span multiple terminals (`true`, `:true`).
 5. `LogitsProcessor` sets illegal ids to `-inf` before sampling.
 
-The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259 numbers, bool, null). Generated strings `json.loads`.
+The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259 numbers, bool, null). Generated strings `json.loads`. `PDAMatcher` rolls back by snapshotting stack sets.
 
 ## Papers
 
 - Willard & Louf, 2023. *Efficient Guided Generation for Large Language Models* (Outlines) — Earley-guided generation.
 - Dong et al., 2024/2025. *XGrammar: Flexible and Efficient Structured Generation Engine* — PDA + context-independent token mask cache.
-- Dong et al., 2026. *XGrammar-2* — adaptive cache / JIT for dynamic agentic grammars (Earley in the production engine; this folder keeps PDA as the default educational path and Earley as the named baseline).
+- Dong et al., 2026. *XGrammar-2* — adaptive cache / JIT for dynamic agentic grammars. This folder's cache is a `dict[(rule, node)] → NodeMask`; Earley is the named mask oracle.
 
 ## Papers on disk
 
@@ -29,13 +29,13 @@ The built-in grammar is a nested JSON subset (objects, arrays, strings, RFC-8259
 ## Compared to XGrammar
 
 **What you learn here:**
-- Byte-level PDA + JIT context-independent token-mask cache
+- Byte-level PDA + dict CI token-mask cache keyed by `(rule, node)`
 - Earley named baseline for mask equality
-- Nested JSON CFG, not regex
+- Nested JSON CFG; samples `json.loads`
 
 | | This repo | XGrammar / XGrammar-2 |
 |---|---|---|
-| Engine | Educational PDA + CI cache | Production PDA + adaptive JIT |
+| Engine | PDA + Python dict CI cache | Production PDA + adaptive JIT |
 | Baseline | Earley mask audit | Earley in XGrammar-2 |
 | Vocab | Tiny char/piece vocab | Full tokenizer vocab |
 | Output | `json.loads` on samples | Serving-time constrained decode |

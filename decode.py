@@ -1,11 +1,11 @@
 """Token-level CFG mask + logits processor.
 
-Default: XGrammar PDA + JIT adaptive token-mask cache (context-independent precheck,
-context-dependent checked on the full stack). Multi-char tokens are accepted only when
-the whole span stays in-language.
+Default: PDA + dict cache of context-independent token masks (lookup by stack-top
+node; context-dependent ids checked on the full stack). Multi-char tokens are
+accepted only when the whole span stays in-language.
 
 Named baseline: ``EarleyTokenMasker`` — character-level Earley scan of every vocab
-token (correctness oracle; no PDA cache). Not a regex.
+token (mask oracle).
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ JSON_VOCAB: list[str] = [
 
 
 class TokenMasker:
-    """Default masker: PDA + JIT adaptive token-mask cache (XGrammar / XGrammar-2-style)."""
+    """Default masker: PDA + dict CI token-mask cache keyed by stack-top node."""
 
     def __init__(self, grammar: Grammar | None = None, vocab: list[str] | None = None) -> None:
         self.grammar = grammar or parse_ebnf(JSON_EBNF)
@@ -86,12 +86,12 @@ class TokenMasker:
         return (not s or m.feed(s)) and m.is_complete()
 
     def cache_stats(self) -> dict[str, int]:
-        """JIT compile pressure: how many stack-top nodes have been compiled."""
+        """How many stack-top nodes have compiled CI masks in `_nodes`."""
         return {"compiled_nodes": len(self.cache._nodes), "vocab": len(self.vocab)}
 
 
 class EarleyTokenMasker:
-    """Named correctness baseline: incremental Earley over characters (no PDA cache)."""
+    """Named mask oracle: incremental Earley over characters."""
 
     def __init__(self, grammar: Grammar | None = None, vocab: list[str] | None = None) -> None:
         self.grammar = grammar or parse_ebnf(JSON_EBNF)

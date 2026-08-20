@@ -1,12 +1,12 @@
-"""Byte-level pushdown automaton + adaptive token-mask cache (XGrammar).
+"""Byte-level pushdown automaton + token-mask cache (XGrammar-shaped).
 
-Dong et al. 2024 (XGrammar): CFG → per-rule FSAs with character edges and rule-reference
+Dong et al. 2024: CFG → per-rule FSAs with character edges and rule-reference
 edges; stack manages recursion. Tokens at each stack-top node are partitioned into
 context-independent accepted / rejected vs context-dependent (need a parent pop).
-Context-independent masks are JIT-compiled per node (XGrammar-2-style amortization) and
-stored in an adaptive format (accept-heavy / reject-heavy / bitset).
+Context-independent masks are compiled per `(rule, node)` on first use and stored
+in a Python dict as accept-heavy / reject-heavy / bitset id lists.
 
-Earley lives in ``grammar.py`` as the named correctness baseline — not used here.
+Earley lives in ``grammar.py`` as the named mask oracle.
 """
 
 from __future__ import annotations
@@ -241,7 +241,7 @@ def _adaptive_node_mask(accepted: list[int], rejected: list[int], dependent: lis
 
 @dataclass
 class TokenMaskCache:
-    """JIT adaptive token-mask cache keyed by stack-top (rule, node)."""
+    """Token-mask cache keyed by stack-top (rule, node)."""
 
     pda: PDA
     vocab: list[str]
@@ -288,7 +288,7 @@ class TokenMaskCache:
 
 
 class PDAMatcher:
-    """Incremental PDA recognizer with rollback (persistent-stack stand-in)."""
+    """Incremental PDA recognizer with rollback via stack-set snapshots."""
 
     def __init__(self, pda: PDA) -> None:
         self.pda = pda
